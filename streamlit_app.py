@@ -293,18 +293,42 @@ with tab2:
         st.download_button("📥 Download Modlist Export", data=mod_buffer.getvalue(), file_name=modlist_export_filename)
 
 # ---------------------------------------------------------
-# TAB 3: AUDIT LOG
+# TAB 3: AUDIT LOG (Updated for Robust Reading)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("Permanent Audit Log (GitHub)")
-    if st.button("Refresh Log"): st.rerun()
+    
+    # Force a refresh button that clears any hidden cache
+    if st.button("🔄 Force Refresh Log"): 
+        st.cache_data.clear()
+        st.rerun()
+    
     try:
+        # Connect to GitHub
         token = st.secrets["GITHUB_TOKEN"]
         repo_name = st.secrets["REPO_NAME"]
         g = Github(token)
         repo = g.get_repo(repo_name)
+        
+        # Get the file content
+        # We add a random 'ref' or query to help bypass GitHub's API caching
         file_content = repo.get_contents("log.csv")
-        log_df = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
-        st.dataframe(log_df, use_container_width=True)
-    except:
-        st.info("Log is pending first conversion.")
+        raw_data = file_content.decoded_content.decode("utf-8")
+        
+        # Check if the file is empty (only headers) or has data
+        if len(raw_data.splitlines()) > 1:
+            # Read into Dataframe
+            log_df = pd.read_csv(io.StringIO(raw_data))
+            
+            # Reverse the order so the NEWEST conversions are at the TOP
+            log_df = log_df.iloc[::-1]
+            
+            # Display as a clean table
+            st.dataframe(log_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Log file found, but no conversions have been recorded yet.")
+            
+    except Exception as e:
+        # Show the actual technical error if it fails
+        st.error(f"Could not read log file: {e}")
+        st.write("Troubleshooting: Make sure 'log.csv' is in the root of the repo and your GITHUB_TOKEN is correct.")
