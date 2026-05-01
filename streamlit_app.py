@@ -44,7 +44,7 @@ def log_to_github(filename, process_type):
 
 # --- APP CONFIG ---
 st.set_page_config(page_title="RGV Aviation Toolkit", page_icon="✈️", layout="wide")
-st.title("✈️ RGV Maintenance Toolkit")
+st.title("✈️ CAFAM Export Toolkit")
 
 tab1, tab2, tab3 = st.tabs(["Recurring Maintenance", "Modlist Items", "Permanent Audit Log"])
 
@@ -52,12 +52,12 @@ tab1, tab2, tab3 = st.tabs(["Recurring Maintenance", "Modlist Items", "Permanent
 # TAB 1: RECURRING MAINTENANCE
 # ---------------------------------------------------------
 with tab1:
-    st.subheader("Transform Recurring Maintenance File")
+    st.subheader("Transform Records Handover File")
     uploaded_handover = st.file_uploader("Upload Maintenance File", type=["xlsx"], key="handover")
 
     if uploaded_handover:
         # We add a button so the logic ONLY runs when clicked
-        if st.button("🚀 Process Recurring Maintenance"):
+        if st.button("🚀 Process"):
             base_name = os.path.splitext(uploaded_handover.name)[0]
             export_filename = f"{base_name} CAFAM Export.xlsx"
 
@@ -168,21 +168,21 @@ with tab1:
             final_buffer = io.BytesIO()
             wb.save(final_buffer)
             
-            st.success("Recurring Maintenance Transformation Complete!")
+            st.success("Transformation to Recurring Maintenance Complete!")
             if log_to_github(uploaded_handover.name, "Recurring Maintenance"):
-                st.info("Logged to GitHub.")
+                st.info("Logged")
             
-            st.download_button("📥 Download Maintenance Export", data=final_buffer.getvalue(), file_name=export_filename)
+            st.download_button("📥 Download Export", data=final_buffer.getvalue(), file_name=export_filename)
 
 # ---------------------------------------------------------
 # TAB 2: MODLIST ITEMS
 # ---------------------------------------------------------
 with tab2:
-    st.subheader("Transform Modlist Items")
-    uploaded_modlist = st.file_uploader("Upload Modlist File", type=["xlsx"], key="modlist")
+    st.subheader("Transform to Modlist Items")
+    uploaded_modlist = st.file_uploader("Upload CAFAM File", type=["xlsx"], key="modlist")
 
     if uploaded_modlist:
-        if st.button("🚀 Process Modlist Items"):
+        if st.button("🚀 Process"):
             base_name = os.path.splitext(uploaded_modlist.name)[0]
             modlist_export_filename = f"{base_name}_REFORMATTED.xlsx"
 
@@ -260,7 +260,7 @@ with tab2:
             wb.save(mod_buffer)
             st.success("Modlist Transformation Complete!")
             if log_to_github(uploaded_modlist.name, "Modlist Items"):
-                st.info("Logged to GitHub.")
+                st.info("Logged")
             st.download_button("📥 Download Modlist Export", data=mod_buffer.getvalue(), file_name=modlist_export_filename)
 
 # ---------------------------------------------------------
