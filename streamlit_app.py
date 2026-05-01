@@ -2,16 +2,16 @@ import streamlit as st
 import pandas as pd
 import io
 import os
-import base64
 from datetime import datetime
 from github import Github
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-# --- HELPER FUNCTIONS ---
+# --- SHARED HELPER FUNCTIONS ---
+
 def format_to_hhmm(val):
-    """Converts decimal hours (147.8) to Aviation HH:MM (147:48)"""
+    """Universal helper for HH:MM conversion"""
     if pd.isna(val) or val == "" or val == 0:
         return ""
     try:
@@ -25,8 +25,8 @@ def format_to_hhmm(val):
     except:
         return val
 
-def log_to_github(filename):
-    """Appends a row to log.csv in your GitHub repository"""
+def log_to_github(filename, process_type):
+    """Centralized GitHub Logging"""
     try:
         token = st.secrets["GITHUB_TOKEN"]
         repo_name = st.secrets["REPO_NAME"]
@@ -34,58 +34,51 @@ def log_to_github(filename):
         repo = g.get_repo(repo_name)
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = f"{timestamp},{filename},Success\n"
+        new_row = f"{timestamp},{filename},{process_type},Success\n"
         
         file_path = "log.csv"
         try:
-            # Update existing log
             file_content = repo.get_contents(file_path)
             current_data = file_content.decoded_content.decode("utf-8")
             updated_data = current_data + new_row
-            repo.update_file(file_path, f"Log update: {filename}", updated_data, file_content.sha)
+            repo.update_file(file_path, f"Log: {filename}", updated_data, file_content.sha)
         except:
-            # Create new log if missing
-            header = "Timestamp,Filename,Status\n"
+            header = "Timestamp,Filename,Process,Status\n"
             repo.create_file(file_path, "Initial log creation", header + new_row)
         return True
     except Exception as e:
         st.error(f"GitHub Logging failed: {e}")
         return False
 
-# --- APP LAYOUT ---
-st.set_page_config(page_title="CAFAM Transformer", page_icon="✈️", layout="wide")
-st.title("✈️ CAFAM Record Transformer")
+# --- APP CONFIG ---
+st.set_page_config(page_title="RGV Aviation Toolkit", page_icon="✈️", layout="wide")
+st.title("✈️ RGV Maintenance Toolkit")
 
-tab1, tab2 = st.tabs(["Transformer", "Permanent Audit Log"])
+tab1, tab2, tab3 = st.tabs(["Record Handover", "Modlist Items", "Permanent Audit Log"])
 
+# ---------------------------------------------------------
+# TAB 1: RECORD HANDOVER (Original Process)
+# ---------------------------------------------------------
 with tab1:
-    st.write("Upload your handover export to apply RGV logic and formatting.")
-    uploaded_file = st.file_uploader("Upload .xlsx file", type=["xlsx"])
+    st.subheader("Transform Records Handover File")
+    uploaded_handover = st.file_uploader("Upload Handover File", type=["xlsx"], key="handover")
 
-    if uploaded_file:
-        # Generate Dynamic Filename
-        base_name = os.path.splitext(uploaded_file.name)[0]
+    if uploaded_handover:
+        base_name = os.path.splitext(uploaded_handover.name)[0]
         export_filename = f"{base_name} CAFAM Export.xlsx"
 
-        # 1. Load Data
-        df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
-        
-        # 2. Capture B7 Reference Value (Aircraft Total Time)
-        try:
-            ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce')
-        except:
-            ref_b7_value = 0
-
-        # 3. Delete Rows 2-9
+        # Logic Steps (Simplified for brevity, exactly as built previously)
+        df_raw = pd.read_excel(uploaded_handover, engine='openpyxl')
+        ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce') if not df_raw.empty else 0
         df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
 
-        # 4. Amalgamate Description (Cols D, E, and others)
-        col_d = df.iloc[:, 3].fillna('').astype(str)
-        col_e = df.iloc[:, 4].fillna('').astype(str)
+        # ... (Rest of Handover Logic: Amalgamate, Rename, Mandatory, Dates, Comp/Appl/NA, Styling) ...
+        # (Included in final build below)
+        
+        col_d, col_e = df.iloc[:, 3].fillna('').astype(str), df.iloc[:, 4].fillna('').astype(str)
         others = df.iloc[:, 5:8].fillna('').astype(str).agg(' '.join, axis=1)
         description_data = (col_d + ": " + col_e + " " + others).str.replace(r'\s+', ' ', regex=True).str.strip().str.lstrip(': ')
 
-        # 5. Reorganize and Rename
         cols_to_remove = df.columns[3:8]
         df = df.drop(columns=cols_to_remove)
         df.insert(3, 'Description', description_data)
@@ -100,14 +93,13 @@ with tab1:
         df = df.rename(columns=rename_map)
         edited_headers = list(rename_map.values()) + ['Description', 'Comp.', 'Appl.', 'N/A', 'Ref_B7']
 
-        # 6. Append DATE_DUEON to Remarks Office
+        # Transformation logic
         if 'DATE_DUEON' in df.columns:
             due_on_clean = pd.to_datetime(df['DATE_DUEON'], errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
             mask = due_on_clean != ""
             df.loc[mask, 'Remarks Office'] = df.loc[mask, 'Remarks Office'].fillna('').astype(str).str.strip() + " " + due_on_clean
             df['Remarks Office'] = df['Remarks Office'].str.replace(r'\s+', ' ', regex=True).str.strip()
 
-        # 7. Conversions (Cal to Months, Mandatory, Dates)
         if 'Int. Cal.' in df.columns:
             df['Int. Cal.'] = (pd.to_numeric(df['Int. Cal.'], errors='coerce') / 365 * 12).round(0).astype('Int64')
         if 'Mandatory' in df.columns:
@@ -116,7 +108,6 @@ with tab1:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
 
-        # 8. Comp / Appl / N/A Logic
         if 'Pn' in df.columns:
             df['Comp.'] = ""
             df.loc[df['Pn'].notna() & (df['Pn'].astype(str).str.strip() != ""), 'Comp.'] = "TRUE"
@@ -130,7 +121,6 @@ with tab1:
             df['N/A'] = ""
             df.loc[df['Appl.'] != "TRUE", 'N/A'] = "TRUE"
 
-        # 9. Component Control Math & Highlighting Prep
         modified_rows_green_cell = []
         if 'ATA / Task No.' in df.columns and 'Ac. TT LSV' in df.columns and 'Item TT' in df.columns:
             mask_cc = df['ATA / Task No.'].astype(str).str.contains('~COMPONENT CONTROL', na=False)
@@ -139,7 +129,6 @@ with tab1:
             modified_rows_green_cell = df.index[mask_cc].tolist()
             df['Ac. TT LSV'] = df['Ac. TT LSV'].apply(format_to_hhmm)
 
-        # 10. Identify Highlights (Yellow and Green Rows)
         yellow_keywords = '8.33 KHZ CONVERSION|deleted|AIRCON/SVC.RECHARGE.ANN|NO LONGER A REQUIREMENT|WHEEL AND BRAKE CONFIRMATION|SANITISE AIRCRAFT|PROPELLER BALANCING'
         yellow_mask = (df['ATA / Task No.'].astype(str).str.contains(yellow_keywords, case=False, na=False)) | \
                       (df['Description'].astype(str).str.contains(yellow_keywords, case=False, na=False))
@@ -150,46 +139,36 @@ with tab1:
                              (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
         modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-        # 11. Add Ref_B7 Column (Fixed for Strict Typing)
         while len(df.columns) < 34: df[f"Extra_{len(df.columns)}"] = None
         df.iloc[0, 33] = ref_b7_value
         cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
 
-        # 12. Final Clean (Zeros)
         zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
         for col in zero_clean_cols:
             if col in df.columns: df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
 
-        # --- STYLING AND EXCEL GENERATION ---
+        # Save to buffer and apply styling
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
         output.seek(0)
         wb = load_workbook(output)
         ws = wb.active
         
-        # Fills
-        green_solid = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid")
-        green_light = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
-        blue_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
-        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        green_solid, green_light = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid"), PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
+        blue_fill, yellow_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"), PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
         
         ac_tt_col_idx = None
         for cell in ws[1]:
             if cell.value in edited_headers: cell.fill = blue_fill
             if cell.value == "Ac. TT LSV": ac_tt_col_idx = cell.column
 
-        # Priority Painting
         for row_idx in modified_rows_green_row:
             for cell in ws[row_idx + 2]: cell.fill = green_light
         for row_idx in modified_rows_yellow:
             for cell in ws[row_idx + 2]: cell.fill = yellow_fill
         if ac_tt_col_idx:
-            for row_idx in modified_rows_green_cell:
-                ws.cell(row=row_idx + 2, column=ac_tt_col_idx).fill = green_solid
+            for row_idx in modified_rows_green_cell: ws.cell(row=row_idx + 2, column=ac_tt_col_idx).fill = green_solid
 
-        # Auto-Resize
         for col in ws.columns:
             max_len = 0
             for cell in col:
@@ -199,23 +178,143 @@ with tab1:
         final_buffer = io.BytesIO()
         wb.save(final_buffer)
         
-        st.success("Transformation Complete!")
-        
-        # Logging
-        if log_to_github(uploaded_file.name):
-            st.info("Conversion recorded in GitHub log.csv")
+        st.success("Handover Transformation Complete!")
+        if log_to_github(uploaded_handover.name, "Record Handover"):
+            st.info("Logged to GitHub.")
+        st.download_button("📥 Download Handover Export", data=final_buffer.getvalue(), file_name=export_filename)
 
-        st.download_button(
-            label="📥 Download Transformed Excel",
-            data=final_buffer.getvalue(),
-            file_name=export_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
+# ---------------------------------------------------------
+# TAB 2: MODLIST ITEMS (New Script)
+# ---------------------------------------------------------
 with tab2:
-    st.subheader("Persistent Audit Log (log.csv)")
-    if st.button("Refresh Log"):
-        st.rerun()
+    st.subheader("Transform Modlist Items")
+    uploaded_modlist = st.file_uploader("Upload Modlist File", type=["xlsx"], key="modlist")
+
+    if uploaded_modlist:
+        base_name = os.path.splitext(uploaded_modlist.name)[0]
+        modlist_export_filename = f"{base_name}_REFORMATTED.xlsx"
+
+        # 1. Load Workbook
+        wb = load_workbook(uploaded_modlist)
+        ws = wb.active
+
+        # Styles from your script
+        light_blue_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
+        light_green_fill = PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
+        darker_yellow_fill = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid')
+        center_align = Alignment(horizontal='center', vertical='center')
+
+        green_identifiers = ["AD", "SB", "MSB", "SIL", "CSB"]
+        yellow_identifiers = [
+            "8.33 KHZ CONVERSION", "AIRCON/SVC.RECHARGE.ANN", "NO LONGER A REQUIREMENT",
+            "CAA SD-2024/001 V.2", "PROPELLER BALANCING", "DELETED",
+            "WHEEL AND BRAKE CONFIRMATION: Please verify the wheel/ brake system"
+        ]
+
+        # 2. Capture B7 and Delete Rows
+        cell_value_b7 = ws['B7'].value
+        ws.delete_rows(2, 8)
+
+        # 3. Amalgamate Data into Column D
+        for row in range(2, ws.max_row + 1):
+            d_val = str(ws.cell(row=row, column=4).value or "").strip()
+            e_val = str(ws.cell(row=row, column=5).value or "").strip()
+            prefix = f"{d_val}: {e_val}" if d_val and e_val else (d_val or e_val)
+            other_parts = [str(ws.cell(row=row, column=col).value).strip() for col in range(6, 9) if ws.cell(row=row, column=col).value is not None]
+            ws.cell(row=row, column=4).value = " ".join([prefix] + other_parts).strip()
+
+        # 4. Delete Columns E through H
+        ws.delete_cols(5, 4)
+
+        # 5. Insert AD, Mod, and Main Type columns
+        ws.insert_cols(3); ws.cell(row=1, column=3).value = "AD"; ws.cell(row=1, column=3).fill = light_blue_fill
+        ws.insert_cols(4); ws.cell(row=1, column=4).value = "Mod"; ws.cell(row=1, column=4).fill = light_blue_fill
+        ws.insert_cols(5); ws.cell(row=1, column=5).value = "Main Type"; ws.cell(row=1, column=5).fill = light_blue_fill
+
+        # 6. Rename headers
+        header_replacements = {
+            "DIRCTVE": "SB/SL", "DESCR": "Description", "GROUP": "Valid", "REASON": "Method of compl.",
+            "DATESAT": "C/W Date", "AC_HRS_SAT": "C/W FH", "AC_LDG_SAT": "C/W FC", "DATE_DUEBY": "Remarks",
+            "ALTREFNO": "AD Foreign", "JOBNO": "C/W WO", "ACTION": "C/W"
+        }
+        col_sb_sl, col_ad, col_mt, col_cw_fh, col_descr, col_cw_date, col_cw_action, col_cw_wo = [None]*8
+        for cell in ws[1]:
+            if cell.value:
+                hdr = str(cell.value).strip()
+                if hdr in header_replacements:
+                    cell.value = header_replacements[hdr]
+                    cell.fill = light_blue_fill
+                    hdr = cell.value
+                if hdr == "SB/SL": col_sb_sl = cell.column
+                if hdr == "AD": col_ad = cell.column
+                if hdr == "Main Type": col_mt = cell.column
+                if hdr == "C/W FH": col_cw_fh = cell.column
+                if hdr == "Description": col_descr = cell.column
+                if hdr == "C/W Date": col_cw_date = cell.column
+                if hdr == "C/W": col_cw_action = cell.column
+                if hdr == "C/W WO": col_cw_wo = cell.column
+
+        # 7. Processing Loop
+        for row_idx in range(2, ws.max_row + 1):
+            cell_sb, cell_ad, cell_mt = ws.cell(row=row_idx, col_sb_sl), ws.cell(row=row_idx, col_ad), ws.cell(row=row_idx, col_mt)
+            cell_fh, cell_ds, cell_dt = ws.cell(row=row_idx, col_cw_fh), ws.cell(row=row_idx, col_descr), ws.cell(row=row_idx, col_cw_date)
+            cell_cw, cell_wo = ws.cell(row=row_idx, col_cw_action), ws.cell(row=row_idx, col_cw_wo)
+            
+            # Move AD strings
+            val_sb_orig = str(cell_sb.value or "").strip()
+            if val_sb_orig.upper().startswith("AD"):
+                cell_ad.value = cell_sb.value; cell_sb.value = None
+
+            # Main Type logic
+            if cell_ad.value: cell_mt.value = "AD"
+            elif cell_sb.value: cell_mt.value = "SB/SL"
+
+            # HH:MM conversion
+            if cell_fh.value is not None:
+                cell_fh.value = format_to_hhmm(cell_fh.value)
+
+            # Date and C/W logic
+            if cell_dt.value:
+                cell_cw.value = "TRUE"
+                cell_dt.number_format = 'yyyy-mm-dd'
+
+            # Clean Work Order
+            if cell_wo.value:
+                cell_wo.value = str(cell_wo.value).strip().rstrip('/')
+
+            # Highlighting
+            v_sb, v_ad, v_ds = str(cell_sb.value or "").upper(), str(cell_ad.value or "").upper(), str(cell_ds.value or "").upper()
+            if any(t in v_sb or t in v_ds for t in yellow_identifiers):
+                for c in ws[row_idx]: c.fill = darker_yellow_fill
+            elif any(t in v_sb or t in v_ad or t in v_ds for t in green_identifiers):
+                for c in ws[row_idx]: c.fill = light_green_fill
+
+        # 8. Align and Resize
+        for row in ws.iter_rows():
+            for c in row: c.alignment = center_align
+        ws['AL2'] = cell_value_b7
+        ws['AL2'].alignment = center_align
+
+        for col in ws.columns:
+            max_len = 0
+            for cell in col:
+                if cell.value: max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col[0].column_letter].width = max_len + 2
+
+        # 9. Save and Download
+        mod_buffer = io.BytesIO()
+        wb.save(mod_buffer)
+        st.success("Modlist Transformation Complete!")
+        if log_to_github(uploaded_modlist.name, "Modlist Items"):
+            st.info("Logged to GitHub.")
+        st.download_button("📥 Download Modlist Export", data=mod_buffer.getvalue(), file_name=modlist_export_filename)
+
+# ---------------------------------------------------------
+# TAB 3: AUDIT LOG
+# ---------------------------------------------------------
+with tab3:
+    st.subheader("Permanent Audit Log (GitHub)")
+    if st.button("Refresh Log"): st.rerun()
     try:
         token = st.secrets["GITHUB_TOKEN"]
         repo_name = st.secrets["REPO_NAME"]
@@ -225,4 +324,4 @@ with tab2:
         log_df = pd.read_csv(io.StringIO(file_content.decoded_content.decode("utf-8")))
         st.dataframe(log_df, use_container_width=True)
     except:
-        st.info("Log file is being generated or repository connection is pending.")
+        st.info("Log is pending first conversion.")
