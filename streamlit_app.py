@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import os  # Added to handle filename strings
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
@@ -28,6 +29,11 @@ st.write("Upload the handover export (.xlsx) to apply aviation logic and formatt
 uploaded_file = st.file_uploader("Upload Handover File", type=["xlsx"])
 
 if uploaded_file:
+    # --- FILENAME LOGIC ---
+    # Extract original name (e.g., 'N65TL') and add the suffix
+    base_name = os.path.splitext(uploaded_file.name)[0]
+    export_filename = f"{base_name} CAFAM Export.xlsx"
+
     # 1. Load Data
     df_raw = pd.read_excel(uploaded_file, engine='openpyxl')
     
@@ -113,18 +119,17 @@ if uploaded_file:
                          (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-    # 11. Ref_B7 Column - UPDATED to prevent TypeError
-    # We use None instead of "" so the column doesn't get locked as a string type
+    # 11. Ref_B7 Column (Fixed for strict typing)
     while len(df.columns) < 34:
-        df[f"Extra_{len(df.columns)}"] = None 
-    
-    # Place the numeric value in the 34th column (Index 33)
+        df[f"Extra_{len(df.columns)}"] = None
     df.iloc[0, 33] = ref_b7_value
-    
-    # Rename for clarity
-    cols = list(df.columns)
-    cols[33] = "Ref_B7"
-    df.columns = cols
+    cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
+
+    # 12. Final Clean & Save to Buffer
+    zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
+    for col in zero_clean_cols:
+        if col in df.columns:
+            df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
 
     # OUTPUT PROCESSING
     output = io.BytesIO()
@@ -170,6 +175,6 @@ if uploaded_file:
     st.download_button(
         label="📥 Download Transformed Excel",
         data=final_output.getvalue(),
-        file_name="transformed_records.xlsx",
+        file_name=export_filename, # Use dynamic filename here
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
