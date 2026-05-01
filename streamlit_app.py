@@ -113,17 +113,18 @@ if uploaded_file:
                          (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-    # 11. Ref_B7 Column
+    # 11. Ref_B7 Column - UPDATED to prevent TypeError
+    # We use None instead of "" so the column doesn't get locked as a string type
     while len(df.columns) < 34:
-        df[f"Extra_{len(df.columns)}"] = ""
+        df[f"Extra_{len(df.columns)}"] = None 
+    
+    # Place the numeric value in the 34th column (Index 33)
     df.iloc[0, 33] = ref_b7_value
-    cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
-
-    # 12. Final Clean & Save to Buffer
-    zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
-    for col in zero_clean_cols:
-        if col in df.columns:
-            df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
+    
+    # Rename for clarity
+    cols = list(df.columns)
+    cols[33] = "Ref_B7"
+    df.columns = cols
 
     # OUTPUT PROCESSING
     output = io.BytesIO()
