@@ -254,36 +254,50 @@ with tab2:
                 if hdr == "C/W": col_cw_action = cell.column
                 if hdr == "C/W WO": col_cw_wo = cell.column
 
-        # 7. Processing Loop
+        # 7. Processing Loop (Fixed syntax for ws.cell)
         for row_idx in range(2, ws.max_row + 1):
-            cell_sb, cell_ad, cell_mt = ws.cell(row=row_idx, col_sb_sl), ws.cell(row=row_idx, col_ad), ws.cell(row=row_idx, col_mt)
-            cell_fh, cell_ds, cell_dt = ws.cell(row=row_idx, col_cw_fh), ws.cell(row=row_idx, col_descr), ws.cell(row=row_idx, col_cw_date)
-            cell_cw, cell_wo = ws.cell(row=row_idx, col_cw_action), ws.cell(row=row_idx, col_cw_wo)
+            # We now name the column argument: column=...
+            cell_sb = ws.cell(row=row_idx, column=col_sb_sl)
+            cell_ad = ws.cell(row=row_idx, column=col_ad)
+            cell_mt = ws.cell(row=row_idx, column=col_mt)
             
-            # Move AD strings
+            cell_fh = ws.cell(row=row_idx, column=col_cw_fh)
+            cell_ds = ws.cell(row=row_idx, column=col_descr)
+            cell_dt = ws.cell(row=row_idx, column=col_cw_date)
+            
+            cell_cw = ws.cell(row=row_idx, column=col_cw_action)
+            cell_wo = ws.cell(row=row_idx, column=col_cw_wo)
+            
+            # A. Move AD strings
             val_sb_orig = str(cell_sb.value or "").strip()
             if val_sb_orig.upper().startswith("AD"):
-                cell_ad.value = cell_sb.value; cell_sb.value = None
+                cell_ad.value = cell_sb.value
+                cell_sb.value = None
 
-            # Main Type logic
-            if cell_ad.value: cell_mt.value = "AD"
-            elif cell_sb.value: cell_mt.value = "SB/SL"
+            # B. Populate Main Type Column
+            if cell_ad.value: 
+                cell_mt.value = "AD"
+            elif cell_sb.value: 
+                cell_mt.value = "SB/SL"
 
-            # HH:MM conversion
+            # C. Convert Decimal Hours to HH:MM
             if cell_fh.value is not None:
                 cell_fh.value = format_to_hhmm(cell_fh.value)
 
-            # Date and C/W logic
+            # D. Format C/W Date and update C/W column to TRUE
             if cell_dt.value:
-                cell_cw.value = "TRUE"
+                if cell_cw: cell_cw.value = "TRUE"
                 cell_dt.number_format = 'yyyy-mm-dd'
 
-            # Clean Work Order
+            # E. Clean Work Order Number
             if cell_wo.value:
                 cell_wo.value = str(cell_wo.value).strip().rstrip('/')
 
-            # Highlighting
-            v_sb, v_ad, v_ds = str(cell_sb.value or "").upper(), str(cell_ad.value or "").upper(), str(cell_ds.value or "").upper()
+            # F. Highlight Logic
+            v_sb = str(cell_sb.value or "").upper()
+            v_ad = str(cell_ad.value or "").upper()
+            v_ds = str(cell_ds.value or "").upper()
+
             if any(t in v_sb or t in v_ds for t in yellow_identifiers):
                 for c in ws[row_idx]: c.fill = darker_yellow_fill
             elif any(t in v_sb or t in v_ad or t in v_ds for t in green_identifiers):
