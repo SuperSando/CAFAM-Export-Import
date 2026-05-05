@@ -72,6 +72,19 @@ def check_password():
 
 st.set_page_config(page_title="CAFAM Export Toolkit", page_icon="✈️", layout="wide")
 
+# Inject Custom CSS to remove all Streamlit default branding, footer, and top menu
+hide_streamlit_style = """
+<style>
+/* Hide the Streamlit main toolbar/menu */
+[data-testid="stToolbar"] {visibility: hidden !important;}
+/* Hide the "Made with Streamlit" footer */
+footer {visibility: hidden !important;}
+/* Remove default top margin for a completely clean layout */
+header {visibility: hidden !important;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 if check_password():
     current_user = st.session_state["username"]
     st.sidebar.write(f"👤 User: **{current_user}**")
@@ -103,7 +116,7 @@ if check_password():
                     base_name = os.path.splitext(uploaded_handover.name)[0]
                     export_filename = f"{base_name} CAFAM Export.xlsx"
 
-                    # 1. Load
+                    # 1. Load Data
                     df_raw = pd.read_excel(uploaded_handover, engine='openpyxl')
                     ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce') if not df_raw.empty else 0
                     df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
