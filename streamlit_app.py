@@ -11,7 +11,6 @@ from openpyxl.utils import get_column_letter
 # --- SHARED HELPER FUNCTIONS ---
 
 def format_to_hhmm(val):
-    """Converts decimal hours (147.8) to Aviation HH:MM (147:48)"""
     if pd.isna(val) or val == "" or val == 0:
         return ""
     try:
@@ -26,7 +25,6 @@ def format_to_hhmm(val):
         return val
 
 def log_to_github(filename, process_type, username):
-    """Logs activity to the central log.csv in GitHub"""
     try:
         token = st.secrets["GITHUB_TOKEN"]
         repo_name = st.secrets["REPO_NAME"]
@@ -34,7 +32,6 @@ def log_to_github(filename, process_type, username):
         repo = g.get_repo(repo_name)
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 5-column format: Timestamp, User, Filename, Process, Status
         new_row = f"{timestamp},{username},{filename},{process_type},Success\n"
         
         file_path = "log.csv"
@@ -50,14 +47,12 @@ def log_to_github(filename, process_type, username):
 # --- AUTHENTICATION GATEKEEPER ---
 
 def check_password():
-    """Returns True if the user had the correct password."""
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
 
     if st.session_state["authenticated"]:
         return True
 
-    # Center the login box slightly
     _, col2, _ = st.columns([1, 2, 1])
     with col2:
         st.subheader("🔑 User Login")
@@ -73,14 +68,12 @@ def check_password():
                 st.error("Invalid username or password")
     return False
 
-# --- MAIN APP START ---
+# --- MAIN APP ---
 
 st.set_page_config(page_title="CAFAM Export Toolkit", page_icon="✈️", layout="wide")
 
 if check_password():
     current_user = st.session_state["username"]
-    
-    # Sidebar for logout and info
     st.sidebar.write(f"👤 User: **{current_user}**")
     if st.sidebar.button("Logout"):
         st.session_state["authenticated"] = False
@@ -96,23 +89,21 @@ if check_password():
         st.subheader("Transform Records Handover File")
         uploaded_handover = st.file_uploader("Upload Maintenance File", type=["xlsx"], key="handover")
 
-        # Initialize memory for Tab 1
         if "handover_output" not in st.session_state:
             st.session_state.handover_output = None
             st.session_state.handover_filename = ""
 
         if uploaded_handover:
-            # Reset memory if a different file is uploaded
             if "last_file_h" not in st.session_state or st.session_state.last_file_h != uploaded_handover.name:
                 st.session_state.handover_output = None
                 st.session_state.last_file_h = uploaded_handover.name
 
             if st.button("🚀 Process", key="btn_h"):
-                with st.spinner("Transforming..."):
+                with st.spinner("Processing..."):
                     base_name = os.path.splitext(uploaded_handover.name)[0]
                     export_filename = f"{base_name} CAFAM Export.xlsx"
 
-                    # 1. Load and Clean
+                    # 1. Load
                     df_raw = pd.read_excel(uploaded_handover, engine='openpyxl')
                     ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce') if not df_raw.empty else 0
                     df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
@@ -122,7 +113,7 @@ if check_password():
                     others = df.iloc[:, 5:8].fillna('').astype(str).agg(' '.join, axis=1)
                     description_data = (col_d + ": " + col_e + " " + others).str.replace(r'\s+', ' ', regex=True).str.strip().str.lstrip(': ')
 
-                    # 3. Rename and Organize
+                    # 3. Rename Map
                     df = df.drop(columns=df.columns[3:8])
                     df.insert(3, 'Description', description_data)
                     rename_map = {
@@ -133,32 +124,46 @@ if check_password():
                         "TTSN": "Item TT", "TCSN": "Cycl. SN", "AC_LDG_SAT": "Item FC LSV"
                     }
                     df = df.rename(columns=rename_map)
-                    edited_headers = list(rename_map.values()) + ['Description', 'Comp.', 'Appl.', 'N/A', 'Ref_B7']
 
-                    # 4. Logic Apply
+                    # 4. Mandatory, Comp, Appl, N/A Logic
+                    if 'Mandatory' in df.columns:
+                        df['Mandatory'] = df['Mandatory'].astype(str).str.strip().replace('M', 'TRUE').replace('nan', '')
+
+                    if 'Pn' in df.columns:
+                        df['Comp.'] = ""
+                        df.loc[df['Pn'].notna() & (df['Pn'].astype(str).str.strip() != ""), 'Comp.'] = "TRUE"
+
+                    if 'Remarks Office' in df.columns:
+                        df['Appl.'] = ""
+                        keywords_appl = 'REPETITIVE|VERIFY IMMDT|COMPLY WITH|AS REQD'
+                        is_app = df['Remarks Office'].astype(str).str.contains(keywords_appl, case=False, na=False) | \
+                                 df['Remarks Office'].isna() | (df['Remarks Office'].astype(str).str.strip() == "")
+                        df.loc[is_app, 'Appl.'] = "TRUE"
+                        df['N/A'] = ""
+                        df.loc[df['Appl.'] != "TRUE", 'N/A'] = "TRUE"
+
                     if 'DATE_DUEON' in df.columns:
                         due_on_clean = pd.to_datetime(df['DATE_DUEON'], errors='coerce').dt.strftime('%Y-%m-%d').fillna('')
                         mask = due_on_clean != ""
                         df.loc[mask, 'Remarks Office'] = df.loc[mask, 'Remarks Office'].fillna('').astype(str).str.strip() + " " + due_on_clean
                         df['Remarks Office'] = df['Remarks Office'].str.replace(r'\s+', ' ', regex=True).str.strip()
 
+                    # 5. Dates & Math
                     if 'Int. Cal.' in df.columns:
                         df['Int. Cal.'] = (pd.to_numeric(df['Int. Cal.'], errors='coerce') / 365 * 12).round(0).astype('Int64')
-                    if 'Mandatory' in df.columns:
-                        df['Mandatory'] = df['Mandatory'].astype(str).str.strip().replace('M', 'TRUE').replace('nan', '')
+                    
                     for col in ['Due date', 'Start date']:
                         if col in df.columns:
                             df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
 
-                    # 5. Math and Highlights
                     modified_rows_green_cell = []
                     if 'ATA / Task No.' in df.columns and 'Ac. TT LSV' in df.columns and 'Item TT' in df.columns:
                         mask_cc = df['ATA / Task No.'].astype(str).str.contains('~COMPONENT CONTROL', na=False)
-                        item_tt_numeric = pd.to_numeric(df['Item TT'], errors='coerce')
-                        df.loc[mask_cc, 'Ac. TT LSV'] = ref_b7_value - item_tt_numeric
+                        df.loc[mask_cc, 'Ac. TT LSV'] = ref_b7_value - pd.to_numeric(df['Item TT'], errors='coerce')
                         modified_rows_green_cell = df.index[mask_cc].tolist()
                         df['Ac. TT LSV'] = df['Ac. TT LSV'].apply(format_to_hhmm)
 
+                    # 6. Highlights Prep
                     yellow_keywords = '8.33 KHZ CONVERSION|deleted|AIRCON/SVC.RECHARGE.ANN|NO LONGER A REQUIREMENT|WHEEL AND BRAKE CONFIRMATION|SANITISE AIRCRAFT|PROPELLER BALANCING'
                     yellow_mask = (df['ATA / Task No.'].astype(str).str.contains(yellow_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(yellow_keywords, case=False, na=False))
                     modified_rows_yellow = df.index[yellow_mask].tolist()
@@ -167,42 +172,46 @@ if check_password():
                     contains_mandatory = (df['ATA / Task No.'].astype(str).str.contains(exclude_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
                     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-                    # 6. Final Formatting and Save
+                    # 7. Column Padding (Ref_B7 at Index 33)
                     while len(df.columns) < 34: df[f"Extra_{len(df.columns)}"] = None
                     df.iloc[0, 33] = ref_b7_value
                     cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
 
+                    zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
+                    for col in zero_clean_cols:
+                        if col in df.columns: df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
+
+                    # 8. Style and Save
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
                     output.seek(0)
                     wb = load_workbook(output)
                     ws = wb.active
                     
-                    green_solid, green_light = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid"), PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
-                    blue_fill, yellow_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"), PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                    g_solid, g_light = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid"), PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
+                    b_fill, y_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"), PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
                     
+                    edited_headers = list(rename_map.values()) + ['Description', 'Comp.', 'Appl.', 'N/A', 'Ref_B7']
                     ac_tt_col_idx = None
                     for cell in ws[1]:
-                        if cell.value in edited_headers: cell.fill = blue_fill
+                        if cell.value in edited_headers: cell.fill = b_fill
                         if cell.value == "Ac. TT LSV": ac_tt_col_idx = cell.column
 
-                    for row_idx in modified_rows_green_row:
-                        for cell in ws[row_idx + 2]: cell.fill = green_light
-                    for row_idx in modified_rows_yellow:
-                        for cell in ws[row_idx + 2]: cell.fill = yellow_fill
+                    for r in modified_rows_green_row:
+                        for c in ws[r + 2]: c.fill = g_light
+                    for r in modified_rows_yellow:
+                        for c in ws[r + 2]: c.fill = y_fill
                     if ac_tt_col_idx:
-                        for row_idx in modified_rows_green_cell: ws.cell(row=row_idx + 2, column=ac_tt_col_idx).fill = green_solid
+                        for r in modified_rows_green_cell: ws.cell(row=r + 2, column=ac_tt_col_idx).fill = g_solid
 
                     for col in ws.columns:
-                        max_len = 0
+                        m_len = 0
                         for cell in col:
-                            if cell.value: max_len = max(max_len, len(str(cell.value)))
-                        ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 2
+                            if cell.value: m_len = max(m_len, len(str(cell.value)))
+                        ws.column_dimensions[get_column_letter(col[0].column)].width = m_len + 2
 
                     final_buffer = io.BytesIO()
                     wb.save(final_buffer)
-                    
-                    # Store results in Session State
                     st.session_state.handover_output = final_buffer.getvalue()
                     st.session_state.handover_filename = export_filename
                     
@@ -210,7 +219,6 @@ if check_password():
                     if log_to_github(uploaded_handover.name, "Recurring Maintenance", current_user):
                         st.info("Logged")
 
-            # Show Download Button if processed
             if st.session_state.handover_output:
                 st.download_button("📥 Download Export", data=st.session_state.handover_output, file_name=st.session_state.handover_filename)
 
@@ -221,10 +229,8 @@ if check_password():
         st.subheader("Transform to Modlist Items")
         uploaded_modlist = st.file_uploader("Upload CAFAM File", type=["xlsx"], key="modlist")
 
-        # Initialize memory for Tab 2
         if "mod_output" not in st.session_state:
-            st.session_state.mod_output = None
-            st.session_state.mod_filename = ""
+            st.session_state.mod_output, st.session_state.mod_filename = None, ""
 
         if uploaded_modlist:
             if "last_file_m" not in st.session_state or st.session_state.last_file_m != uploaded_modlist.name:
@@ -238,17 +244,14 @@ if check_password():
 
                     wb = load_workbook(uploaded_modlist)
                     ws = wb.active
-                    
                     l_blue, l_green = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid'), PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
                     d_yellow, c_align = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid'), Alignment(horizontal='center', vertical='center')
-
                     green_ids = ["AD", "SB", "MSB", "SIL", "CSB"]
                     yellow_ids = ["8.33 KHZ CONVERSION", "AIRCON/SVC.RECHARGE.ANN", "NO LONGER A REQUIREMENT", "CAA SD-2024/001 V.2", "PROPELLER BALANCING", "DELETED", "WHEEL AND BRAKE CONFIRMATION: Please verify the wheel/ brake system"]
 
                     cell_b7 = ws['B7'].value
                     ws.delete_rows(2, 8)
 
-                    # Amalgamate and Rename (Manual column mapping as per your script)
                     for row in range(2, ws.max_row + 1):
                         d_val, e_val = str(ws.cell(row=row, column=4).value or "").strip(), str(ws.cell(row=row, column=5).value or "").strip()
                         prefix = f"{d_val}: {e_val}" if d_val and e_val else (d_val or e_val)
@@ -260,33 +263,29 @@ if check_password():
                     ws.insert_cols(4); ws.cell(row=1, column=4).value = "Mod"; ws.cell(row=1, column=4).fill = l_blue
                     ws.insert_cols(5); ws.cell(row=1, column=5).value = "Main Type"; ws.cell(row=1, column=5).fill = l_blue
 
-                    # Column Index Mapping
-                    header_map = {"DIRCTVE": "SB/SL", "DESCR": "Description", "GROUP": "Valid", "REASON": "Method of compl.", "DATESAT": "C/W Date", "AC_HRS_SAT": "C/W FH", "AC_LDG_SAT": "C/W FC", "DATE_DUEBY": "Remarks", "ALTREFNO": "AD Foreign", "JOBNO": "C/W WO", "ACTION": "C/W"}
+                    h_map = {"DIRCTVE": "SB/SL", "DESCR": "Description", "GROUP": "Valid", "REASON": "Method of compl.", "DATESAT": "C/W Date", "AC_HRS_SAT": "C/W FH", "AC_LDG_SAT": "C/W FC", "DATE_DUEBY": "Remarks", "ALTREFNO": "AD Foreign", "JOBNO": "C/W WO", "ACTION": "C/W"}
                     c_idx = {h: None for h in ["SB/SL", "AD", "Main Type", "C/W FH", "Description", "C/W Date", "C/W", "C/W WO"]}
-                    
                     for cell in ws[1]:
                         if cell.value:
                             val = str(cell.value).strip()
-                            if val in header_map:
-                                cell.value = header_map[val]; cell.fill = l_blue; val = cell.value
+                            if val in h_map:
+                                cell.value = h_map[val]; cell.fill = l_blue; val = cell.value
                             if val in c_idx: c_idx[val] = cell.column
 
-                    for row_idx in range(2, ws.max_row + 1):
-                        cells = {k: ws.cell(row=row_idx, column=v) if v else None for k, v in c_idx.items()}
-                        
-                        v_sb_orig = str(cells["SB/SL"].value or "").strip()
-                        if v_sb_orig.upper().startswith("AD"): cells["AD"].value = cells["SB/SL"].value; cells["SB/SL"].value = None
-                        if cells["AD"].value: cells["Main Type"].value = "AD"
-                        elif cells["SB/SL"].value: cells["Main Type"].value = "SB/SL"
-                        if cells["C/W FH"].value is not None: cells["C/W FH"].value = format_to_hhmm(cells["C/W FH"].value)
-                        if cells["C/W Date"].value: cells["C/W"].value = "TRUE"; cells["C/W Date"].number_format = 'yyyy-mm-dd'
-                        if cells["C/W WO"].value: cells["C/W WO"].value = str(cells["C/W WO"].value).strip().rstrip('/')
-
-                        v_sb, v_ad, v_ds = str(cells["SB/SL"].value or "").upper(), str(cells["AD"].value or "").upper(), str(cells["Description"].value or "").upper()
-                        if any(t in v_sb or t in v_ds for t in yellow_ids):
-                            for c in ws[row_idx]: c.fill = d_yellow
-                        elif any(t in v_sb or t in v_ad or t in v_ds for t in green_ids):
-                            for c in ws[row_idx]: c.fill = l_green
+                    for r in range(2, ws.max_row + 1):
+                        cl = {k: ws.cell(row=r, column=v) if v else None for k, v in c_idx.items()}
+                        v_sb_o = str(cl["SB/SL"].value or "").strip()
+                        if v_sb_o.upper().startswith("AD"): cl["AD"].value = cl["SB/SL"].value; cl["SB/SL"].value = None
+                        if cl["AD"].value: cl["Main Type"].value = "AD"
+                        elif cl["SB/SL"].value: cl["Main Type"].value = "SB/SL"
+                        if cl["C/W FH"].value is not None: cl["C/W FH"].value = format_to_hhmm(cl["C/W FH"].value)
+                        if cl["C/W Date"].value: cl["C/W"].value = "TRUE"; cl["C/W Date"].number_format = 'yyyy-mm-dd'
+                        if cl["C/W WO"].value: cl["C/W WO"].value = str(cl["C/W WO"].value).strip().rstrip('/')
+                        v_s, v_a, v_d = str(cl["SB/SL"].value or "").upper(), str(cl["AD"].value or "").upper(), str(cl["Description"].value or "").upper()
+                        if any(t in v_s or t in v_d for t in yellow_ids):
+                            for c in ws[r]: c.fill = d_yellow
+                        elif any(t in v_s or t in v_a or t in v_d for t in green_ids):
+                            for c in ws[r]: c.fill = l_green
 
                     for row in ws.iter_rows():
                         for c in row: c.alignment = c_align
@@ -294,16 +293,15 @@ if check_password():
                     ws['AL2'].alignment = c_align
 
                     for col in ws.columns:
-                        max_len = 0
+                        m_len = 0
                         for cell in col:
-                            if cell.value: max_len = max(max_len, len(str(cell.value)))
-                        ws.column_dimensions[col[0].column_letter].width = max_len + 2
+                            if cell.value: m_len = max(m_len, len(str(cell.value)))
+                        ws.column_dimensions[col[0].column_letter].width = m_len + 2
 
                     mod_buf = io.BytesIO()
                     wb.save(mod_buf)
                     st.session_state.mod_output = mod_buf.getvalue()
                     st.session_state.mod_filename = modlist_filename
-                    
                     st.success("Modlist Transformation Complete!")
                     if log_to_github(uploaded_modlist.name, "Modlist Items", current_user):
                         st.info("Logged")
