@@ -150,7 +150,6 @@ if check_password():
                             ref_b7_value = 0
                         df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
                     else:
-                        # Raw DBF file has headers on row 0 and no preamble rows
                         ref_b7_value = 0
                         for col_candidate in ["AC_HRS_SAT", "TTSN", "AC_HRS"]:
                             if col_candidate in df_raw.columns:
@@ -207,14 +206,23 @@ if check_password():
                         if col in df.columns:
                             df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
 
+                    # 6. Component Control Math with explicit type coercion
                     modified_rows_green_cell = []
                     if 'ATA / Task No.' in df.columns and 'Ac. TT LSV' in df.columns and 'Item TT' in df.columns:
                         mask_cc = df['ATA / Task No.'].astype(str).str.contains('~COMPONENT CONTROL', na=False)
-                        df.loc[mask_cc, 'Ac. TT LSV'] = ref_b7_value - pd.to_numeric(df['Item TT'], errors='coerce')
+                        
+                        df['Ac. TT LSV'] = df['Ac. TT LSV'].astype(object)
+                        
+                        b7_num = pd.to_numeric(ref_b7_value, errors='coerce')
+                        b7_num = 0.0 if pd.isna(b7_num) else float(b7_num)
+
+                        tt_numeric = pd.to_numeric(df.loc[mask_cc, 'Item TT'], errors='coerce').fillna(0.0)
+                        df.loc[mask_cc, 'Ac. TT LSV'] = b7_num - tt_numeric
+
                         modified_rows_green_cell = df.index[mask_cc].tolist()
                         df['Ac. TT LSV'] = df['Ac. TT LSV'].apply(format_to_hhmm)
 
-                    # 6. Highlights Prep
+                    # 7. Highlights Prep
                     yellow_keywords = '8.33 KHZ CONVERSION|deleted|AIRCON/SVC.RECHARGE.ANN|NO LONGER A REQUIREMENT|WHEEL AND BRAKE CONFIRMATION|SANITISE AIRCRAFT|PROPELLER BALANCING'
                     yellow_mask = (df['ATA / Task No.'].astype(str).str.contains(yellow_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(yellow_keywords, case=False, na=False))
                     modified_rows_yellow = df.index[yellow_mask].tolist()
@@ -223,7 +231,7 @@ if check_password():
                     contains_mandatory = (df['ATA / Task No.'].astype(str).str.contains(exclude_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
                     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-                    # 7. Column Padding (Ref_B7 at Index 33)
+                    # 8. Column Padding (Ref_B7 at Index 33)
                     while len(df.columns) < 34: df[f"Extra_{len(df.columns)}"] = None
                     df.iloc[0, 33] = ref_b7_value
                     cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
@@ -232,7 +240,7 @@ if check_password():
                     for col in zero_clean_cols:
                         if col in df.columns: df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
 
-                    # 8. Style and Save
+                    # 9. Style and Save
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
                     output.seek(0)
@@ -299,7 +307,6 @@ if check_password():
                         wb = df_to_openpyxl_wb(df_mod)
                         ws = wb.active
                         cell_b7 = None
-                        # No 8-row metadata header in raw DBF
                     else:
                         wb = load_workbook(uploaded_modlist)
                         ws = wb.active
