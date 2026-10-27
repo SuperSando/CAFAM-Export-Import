@@ -136,6 +136,15 @@ if check_password():
                 st.session_state.handover_output = None
                 st.session_state.last_file_h = uploaded_handover.name
 
+            # If user uploaded a DBF, allow an optional manual override for Aircraft TT if not detected
+            is_dbf = os.path.splitext(uploaded_handover.name)[1].lower() == ".dbf"
+            dbf_manual_tt = None
+            if is_dbf:
+                dbf_manual_tt = st.number_input(
+                    "Aircraft Total Time (Ref B7) - required for DBF Component Control calculation:",
+                    value=0.0, step=0.1, format="%.2f"
+                )
+
             if st.button("🚀 Process", key="btn_h"):
                 with st.spinner("Processing..."):
                     base_name = os.path.splitext(uploaded_handover.name)[0]
@@ -144,18 +153,30 @@ if check_password():
                     df_raw, file_type = load_file_to_df(uploaded_handover)
 
                     if file_type == "xlsx":
+                        # Excel has header on row 1, so row index 5 in DataFrame is Excel row 7 (B7)
                         try:
-                            ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce')
+                            ref_b7_raw = df_raw.iloc[5, 1]
+                            ref_b7_value = pd.to_numeric(ref_b7_raw, errors='coerce')
+                            if pd.isna(ref_b7_value):
+                                ref_b7_value = 0.0
                         except:
-                            ref_b7_value = 0
+                            ref_b7_value = 0.0
+
+                        # Remove rows 2 through 9 (indices 0 through 7 in df_raw)
                         df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
                     else:
-                        ref_b7_value = 0
-                        for col_candidate in ["AC_HRS_SAT", "TTSN", "AC_HRS"]:
-                            if col_candidate in df_raw.columns:
-                                ref_b7_value = pd.to_numeric(df_raw[col_candidate].dropna(), errors='coerce').max()
-                                break
+                        # Raw DBF file: no preamble metadata rows to delete
                         df = df_raw.copy().reset_index(drop=True)
+                        if dbf_manual_tt and dbf_manual_tt > 0:
+                            ref_b7_value = float(dbf_manual_tt)
+                        else:
+                            ref_b7_value = 0.0
+                            for col_candidate in ["AC_HRS_SAT", "TTSN", "AC_HRS"]:
+                                if col_candidate in df.columns:
+                                    calc_max = pd.to_numeric(df[col_candidate].dropna(), errors='coerce').max()
+                                    if pd.notna(calc_max):
+                                        ref_b7_value = float(calc_max)
+                                        break
 
                     # 2. Amalgamate Description
                     col_d = df.iloc[:, 3].fillna('').astype(str)
@@ -206,16 +227,14 @@ if check_password():
                         if col in df.columns:
                             df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
 
-                    # 6. Component Control Math with explicit type coercion
+                    # 6. Component Control Math with explicit type coercion & verified Ref_B7
                     modified_rows_green_cell = []
                     if 'ATA / Task No.' in df.columns and 'Ac. TT LSV' in df.columns and 'Item TT' in df.columns:
                         mask_cc = df['ATA / Task No.'].astype(str).str.contains('~COMPONENT CONTROL', na=False)
                         
                         df['Ac. TT LSV'] = df['Ac. TT LSV'].astype(object)
                         
-                        b7_num = pd.to_numeric(ref_b7_value, errors='coerce')
-                        b7_num = 0.0 if pd.isna(b7_num) else float(b7_num)
-
+                        b7_num = float(ref_b7_value)
                         tt_numeric = pd.to_numeric(df.loc[mask_cc, 'Item TT'], errors='coerce').fillna(0.0)
                         df.loc[mask_cc, 'Ac. TT LSV'] = b7_num - tt_numeric
 
@@ -231,42 +250,56 @@ if check_password():
                     contains_mandatory = (df['ATA / Task No.'].astype(str).str.contains(exclude_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
                     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-                    # 8. Column Padding (Ref_B7 at Index 33)
-                    while len(df.columns) < 34: df[f"Extra_{len(df.columns)}"] = None
-                    df.iloc[0, 33] = ref_b7_value
-                    cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
+                    # 8. Column Padding and ensuring Ref_B7 header is in Column AH (Column 34 / 0-indexed 33)
+                    while len(df.columns) < 34: 
+                        df[f"Extra_{len(df.columns)}"] = None
+                    cols = list(df.columns)
+                    cols[33] = "Ref_B7"
+                    df.columns = cols
 
                     zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
                     for col in zero_clean_cols:
-                        if col in df.columns: df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
+                        if col in df.columns: 
+                            df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
 
                     # 9. Style and Save
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer: 
+                        df.to_excel(writer, index=False)
                     output.seek(0)
                     wb = load_workbook(output)
                     ws = wb.active
                     
+                    # Explicitly write the Ref B7 value to cell AH2
+                    ws['AH2'] = ref_b7_value
+                    ws['AH2'].alignment = Alignment(horizontal='center', vertical='center')
+
                     g_solid, g_light = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid"), PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
                     b_fill, y_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"), PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
                     
                     edited_headers = list(rename_map.values()) + ['Description', 'Comp.', 'Appl.', 'N/A', 'Ref_B7']
                     ac_tt_col_idx = None
                     for cell in ws[1]:
-                        if cell.value in edited_headers: cell.fill = b_fill
-                        if cell.value == "Ac. TT LSV": ac_tt_col_idx = cell.column
+                        if cell.value in edited_headers: 
+                            cell.fill = b_fill
+                        if cell.value == "Ac. TT LSV": 
+                            ac_tt_col_idx = cell.column
 
                     for r in modified_rows_green_row:
-                        for c in ws[r + 2]: c.fill = g_light
+                        for c in ws[r + 2]: 
+                            c.fill = g_light
                     for r in modified_rows_yellow:
-                        for c in ws[r + 2]: c.fill = y_fill
+                        for c in ws[r + 2]: 
+                            c.fill = y_fill
                     if ac_tt_col_idx:
-                        for r in modified_rows_green_cell: ws.cell(row=r + 2, column=ac_tt_col_idx).fill = g_solid
+                        for r in modified_rows_green_cell: 
+                            ws.cell(row=r + 2, column=ac_tt_col_idx).fill = g_solid
 
                     for col in ws.columns:
                         m_len = 0
                         for cell in col:
-                            if cell.value: m_len = max(m_len, len(str(cell.value)))
+                            if cell.value: 
+                                m_len = max(m_len, len(str(cell.value)))
                         ws.column_dimensions[get_column_letter(col[0].column)].width = m_len + 2
 
                     final_buffer = io.BytesIO()
