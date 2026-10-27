@@ -2,13 +2,11 @@ import streamlit as st
 import pandas as pd
 import io
 import os
-import tempfile
 from datetime import datetime
 from github import Github
-from openpyxl import load_workbook, Workbook
+from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from dbfread import DBF
 
 # --- SHARED HELPER FUNCTIONS ---
 
@@ -25,33 +23,6 @@ def format_to_hhmm(val):
         return f"{hours}:{minutes:02d}"
     except:
         return val
-
-def load_file_to_df(uploaded_file):
-    """Loads either an .xlsx or .dbf file into a pandas DataFrame."""
-    ext = os.path.splitext(uploaded_file.name)[1].lower()
-    if ext == ".dbf":
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".dbf") as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
-        try:
-            table = DBF(tmp_path, load=True, encoding="latin1")
-            df = pd.DataFrame(iter(table))
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        return df, "dbf"
-    else:
-        df = pd.read_excel(uploaded_file, engine='openpyxl')
-        return df, "xlsx"
-
-def df_to_openpyxl_wb(df):
-    """Converts a DataFrame into an openpyxl Workbook with a 1-based header row."""
-    wb = Workbook()
-    ws = wb.active
-    ws.append(list(df.columns))
-    for row in df.itertuples(index=False):
-        ws.append(list(row))
-    return wb
 
 def log_to_github(filename, process_type, username):
     try:
@@ -101,10 +72,14 @@ def check_password():
 
 st.set_page_config(page_title="CAFAM Export Toolkit", page_icon="✈️", layout="wide")
 
+# Inject Custom CSS to remove all Streamlit default branding, footer, and top menu
 hide_streamlit_style = """
 <style>
+/* Hide the Streamlit main toolbar/menu */
 [data-testid="stToolbar"] {visibility: hidden !important;}
+/* Hide the "Made with Streamlit" footer */
 footer {visibility: hidden !important;}
+/* Remove default top margin for a completely clean layout */
 header {visibility: hidden !important;}
 </style>
 """
@@ -125,7 +100,7 @@ if check_password():
     # ---------------------------------------------------------
     with tab1:
         st.subheader("Transform Records Handover File")
-        uploaded_handover = st.file_uploader("Upload Maintenance File", type=["xlsx", "dbf"], key="handover")
+        uploaded_handover = st.file_uploader("Upload Maintenance File", type=["xlsx"], key="handover")
 
         if "handover_output" not in st.session_state:
             st.session_state.handover_output = None
@@ -136,51 +111,18 @@ if check_password():
                 st.session_state.handover_output = None
                 st.session_state.last_file_h = uploaded_handover.name
 
-            # If user uploaded a DBF, allow an optional manual override for Aircraft TT if not detected
-            is_dbf = os.path.splitext(uploaded_handover.name)[1].lower() == ".dbf"
-            dbf_manual_tt = None
-            if is_dbf:
-                dbf_manual_tt = st.number_input(
-                    "Aircraft Total Time (Ref B7) - required for DBF Component Control calculation:",
-                    value=0.0, step=0.1, format="%.2f"
-                )
-
             if st.button("🚀 Process", key="btn_h"):
                 with st.spinner("Processing..."):
                     base_name = os.path.splitext(uploaded_handover.name)[0]
                     export_filename = f"{base_name} CAFAM Export.xlsx"
 
-                    df_raw, file_type = load_file_to_df(uploaded_handover)
-
-                    if file_type == "xlsx":
-                        # Excel has header on row 1, so row index 5 in DataFrame is Excel row 7 (B7)
-                        try:
-                            ref_b7_raw = df_raw.iloc[5, 1]
-                            ref_b7_value = pd.to_numeric(ref_b7_raw, errors='coerce')
-                            if pd.isna(ref_b7_value):
-                                ref_b7_value = 0.0
-                        except:
-                            ref_b7_value = 0.0
-
-                        # Remove rows 2 through 9 (indices 0 through 7 in df_raw)
-                        df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
-                    else:
-                        # Raw DBF file: no preamble metadata rows to delete
-                        df = df_raw.copy().reset_index(drop=True)
-                        if dbf_manual_tt and dbf_manual_tt > 0:
-                            ref_b7_value = float(dbf_manual_tt)
-                        else:
-                            ref_b7_value = 0.0
-                            for col_candidate in ["AC_HRS_SAT", "TTSN", "AC_HRS"]:
-                                if col_candidate in df.columns:
-                                    calc_max = pd.to_numeric(df[col_candidate].dropna(), errors='coerce').max()
-                                    if pd.notna(calc_max):
-                                        ref_b7_value = float(calc_max)
-                                        break
+                    # 1. Load Data
+                    df_raw = pd.read_excel(uploaded_handover, engine='openpyxl')
+                    ref_b7_value = pd.to_numeric(df_raw.iloc[5, 1], errors='coerce') if not df_raw.empty else 0
+                    df = df_raw.drop(df_raw.index[0:8]).reset_index(drop=True)
 
                     # 2. Amalgamate Description
-                    col_d = df.iloc[:, 3].fillna('').astype(str)
-                    col_e = df.iloc[:, 4].fillna('').astype(str)
+                    col_d, col_e = df.iloc[:, 3].fillna('').astype(str), df.iloc[:, 4].fillna('').astype(str)
                     others = df.iloc[:, 5:8].fillna('').astype(str).agg(' '.join, axis=1)
                     description_data = (col_d + ": " + col_e + " " + others).str.replace(r'\s+', ' ', regex=True).str.strip().str.lstrip(': ')
 
@@ -227,21 +169,14 @@ if check_password():
                         if col in df.columns:
                             df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%Y-%m-%d').replace('NaT', '')
 
-                    # 6. Component Control Math with explicit type coercion & verified Ref_B7
                     modified_rows_green_cell = []
                     if 'ATA / Task No.' in df.columns and 'Ac. TT LSV' in df.columns and 'Item TT' in df.columns:
                         mask_cc = df['ATA / Task No.'].astype(str).str.contains('~COMPONENT CONTROL', na=False)
-                        
-                        df['Ac. TT LSV'] = df['Ac. TT LSV'].astype(object)
-                        
-                        b7_num = float(ref_b7_value)
-                        tt_numeric = pd.to_numeric(df.loc[mask_cc, 'Item TT'], errors='coerce').fillna(0.0)
-                        df.loc[mask_cc, 'Ac. TT LSV'] = b7_num - tt_numeric
-
+                        df.loc[mask_cc, 'Ac. TT LSV'] = ref_b7_value - pd.to_numeric(df['Item TT'], errors='coerce')
                         modified_rows_green_cell = df.index[mask_cc].tolist()
                         df['Ac. TT LSV'] = df['Ac. TT LSV'].apply(format_to_hhmm)
 
-                    # 7. Highlights Prep
+                    # 6. Highlights Prep
                     yellow_keywords = '8.33 KHZ CONVERSION|deleted|AIRCON/SVC.RECHARGE.ANN|NO LONGER A REQUIREMENT|WHEEL AND BRAKE CONFIRMATION|SANITISE AIRCRAFT|PROPELLER BALANCING'
                     yellow_mask = (df['ATA / Task No.'].astype(str).str.contains(yellow_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(yellow_keywords, case=False, na=False))
                     modified_rows_yellow = df.index[yellow_mask].tolist()
@@ -250,56 +185,42 @@ if check_password():
                     contains_mandatory = (df['ATA / Task No.'].astype(str).str.contains(exclude_keywords, case=False, na=False)) | (df['Description'].astype(str).str.contains(exclude_keywords, case=False, na=False))
                     modified_rows_green_row = df.index[~contains_mandatory].tolist()
 
-                    # 8. Column Padding and ensuring Ref_B7 header is in Column AH (Column 34 / 0-indexed 33)
-                    while len(df.columns) < 34: 
-                        df[f"Extra_{len(df.columns)}"] = None
-                    cols = list(df.columns)
-                    cols[33] = "Ref_B7"
-                    df.columns = cols
+                    # 7. Column Padding (Ref_B7 at Index 33)
+                    while len(df.columns) < 34: df[f"Extra_{len(df.columns)}"] = None
+                    df.iloc[0, 33] = ref_b7_value
+                    cols = list(df.columns); cols[33] = "Ref_B7"; df.columns = cols
 
                     zero_clean_cols = ['Int. FH', 'Int. FC', 'Int. Cal.', 'Item FC LSV']
                     for col in zero_clean_cols:
-                        if col in df.columns: 
-                            df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
+                        if col in df.columns: df[col] = df[col].replace({0: pd.NA, 0.0: pd.NA, "0": pd.NA})
 
-                    # 9. Style and Save
+                    # 8. Style and Save
                     output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer: 
-                        df.to_excel(writer, index=False)
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False)
                     output.seek(0)
                     wb = load_workbook(output)
                     ws = wb.active
                     
-                    # Explicitly write the Ref B7 value to cell AH2
-                    ws['AH2'] = ref_b7_value
-                    ws['AH2'].alignment = Alignment(horizontal='center', vertical='center')
-
                     g_solid, g_light = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid"), PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
                     b_fill, y_fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid"), PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
                     
                     edited_headers = list(rename_map.values()) + ['Description', 'Comp.', 'Appl.', 'N/A', 'Ref_B7']
                     ac_tt_col_idx = None
                     for cell in ws[1]:
-                        if cell.value in edited_headers: 
-                            cell.fill = b_fill
-                        if cell.value == "Ac. TT LSV": 
-                            ac_tt_col_idx = cell.column
+                        if cell.value in edited_headers: cell.fill = b_fill
+                        if cell.value == "Ac. TT LSV": ac_tt_col_idx = cell.column
 
                     for r in modified_rows_green_row:
-                        for c in ws[r + 2]: 
-                            c.fill = g_light
+                        for c in ws[r + 2]: c.fill = g_light
                     for r in modified_rows_yellow:
-                        for c in ws[r + 2]: 
-                            c.fill = y_fill
+                        for c in ws[r + 2]: c.fill = y_fill
                     if ac_tt_col_idx:
-                        for r in modified_rows_green_cell: 
-                            ws.cell(row=r + 2, column=ac_tt_col_idx).fill = g_solid
+                        for r in modified_rows_green_cell: ws.cell(row=r + 2, column=ac_tt_col_idx).fill = g_solid
 
                     for col in ws.columns:
                         m_len = 0
                         for cell in col:
-                            if cell.value: 
-                                m_len = max(m_len, len(str(cell.value)))
+                            if cell.value: m_len = max(m_len, len(str(cell.value)))
                         ws.column_dimensions[get_column_letter(col[0].column)].width = m_len + 2
 
                     final_buffer = io.BytesIO()
@@ -319,7 +240,7 @@ if check_password():
     # ---------------------------------------------------------
     with tab2:
         st.subheader("Transform to Modlist Items")
-        uploaded_modlist = st.file_uploader("Upload CAFAM File", type=["xlsx", "dbf"], key="modlist")
+        uploaded_modlist = st.file_uploader("Upload CAFAM File", type=["xlsx"], key="modlist")
 
         if "mod_output" not in st.session_state:
             st.session_state.mod_output, st.session_state.mod_filename = None, ""
@@ -334,26 +255,18 @@ if check_password():
                     base_name = os.path.splitext(uploaded_modlist.name)[0]
                     modlist_filename = f"{base_name}_REFORMATTED.xlsx"
 
-                    ext_m = os.path.splitext(uploaded_modlist.name)[1].lower()
-                    if ext_m == ".dbf":
-                        df_mod, _ = load_file_to_df(uploaded_modlist)
-                        wb = df_to_openpyxl_wb(df_mod)
-                        ws = wb.active
-                        cell_b7 = None
-                    else:
-                        wb = load_workbook(uploaded_modlist)
-                        ws = wb.active
-                        cell_b7 = ws['B7'].value
-                        ws.delete_rows(2, 8)
-
+                    wb = load_workbook(uploaded_modlist)
+                    ws = wb.active
                     l_blue, l_green = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid'), PatternFill(start_color='90EE90', end_color='90EE90', fill_type='solid')
                     d_yellow, c_align = PatternFill(start_color='FFFF99', end_color='FFFF99', fill_type='solid'), Alignment(horizontal='center', vertical='center')
                     green_ids = ["AD", "SB", "MSB", "SIL", "CSB"]
                     yellow_ids = ["8.33 KHZ CONVERSION", "AIRCON/SVC.RECHARGE.ANN", "NO LONGER A REQUIREMENT", "CAA SD-2024/001 V.2", "PROPELLER BALANCING", "DELETED", "WHEEL AND BRAKE CONFIRMATION: Please verify the wheel/ brake system"]
 
+                    cell_b7 = ws['B7'].value
+                    ws.delete_rows(2, 8)
+
                     for row in range(2, ws.max_row + 1):
-                        d_val = str(ws.cell(row=row, column=4).value or "").strip()
-                        e_val = str(ws.cell(row=row, column=5).value or "").strip()
+                        d_val, e_val = str(ws.cell(row=row, column=4).value or "").strip(), str(ws.cell(row=row, column=5).value or "").strip()
                         prefix = f"{d_val}: {e_val}" if d_val and e_val else (d_val or e_val)
                         other_parts = [str(ws.cell(row=row, column=col).value).strip() for col in range(6, 9) if ws.cell(row=row, column=col).value is not None]
                         ws.cell(row=row, column=4).value = " ".join([prefix] + other_parts).strip()
